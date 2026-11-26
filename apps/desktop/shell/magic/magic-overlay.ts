@@ -114,7 +114,6 @@ class Director {
   private thinking = false;
   private thinkingT0 = 0;
   private thinkingStage = 0;
-  private scans: Array<{ rect: Rect; start: number; sweep: number; end: number }> = [];
   private fieldAlpha = 0;
   private rng = new A.SeededRandom(7);
   private lastAct = 0;
@@ -146,7 +145,7 @@ class Director {
     if (e.type === 'agent-thinking') {
       if (!e.done && !this.thinking) {
         this.thinking = true; this.thinkingT0 = now; this.thinkingStage = 0;
-        this.fadeFrom = null; this.scans = [];
+        this.fadeFrom = null;
       } else if (e.done) {
         this.finishThinking();
       }
@@ -157,7 +156,7 @@ class Director {
       if (!isEditingAct(e.act)) {
         if (!this.thinking) {
           this.thinking = true; this.thinkingT0 = now; this.thinkingStage = 0;
-          this.fadeFrom = null; this.scans = [];
+          this.fadeFrom = null;
         } else if (this.thinkingStage < 2) this.thinkingStage = 1;
         if (!this.running) { this.running = true; requestAnimationFrame(this.frame); }
         return;
@@ -225,19 +224,6 @@ class Director {
     this.swarmT0 = now;
   }
 
-  private addScan(r: Rect, now: number) {
-    if (!r) return;
-    const sweep = (1 + this.rng.next() * 0.5) * A.THINKING.sweepFactor(r.w);
-    this.scans.push({ rect: r, start: now, sweep, end: A.THINKING.scanEnd(now, sweep) });
-    // MagicThinking.swift:57 scanRoom() caps concurrent scans. The earlier port
-    // ignored it, so at 0.18s scanGap up to 12 full-height lines stacked into a
-    // "fence" — the main reason the effect looked cheap. Keep at most 3.
-    const room = A.THINKING.scanRoom(4);
-    while (this.scans.length > room) this.scans.shift();
-    this.lastScan = now;
-  }
-  private lastScan = -1;
-
   private paintThinking(now: number) {
     const c = this.ctx;
     const t = now - this.thinkingT0;
@@ -259,59 +245,7 @@ class Director {
     c.fillRect(0, 0, innerWidth, innerHeight);
     c.restore();
 
-    /* 2 — scan sweeps: a tapered light beam with a bright head and a fading
-       tail, plus a camera-viewfinder reticle built from four corner brackets
-       instead of a dashed 28px square. */
-    if (now - this.lastScan > A.THINKING.scanGap && t > A.THINKING.scanStart) {
-      this.addScan([r.viewer, r.timeline, r.library, r.chat][this.scans.length % 4], now);
-    }
-    for (let i = this.scans.length - 1; i >= 0; i--) {
-      const s = this.scans[i];
-      if (now > s.end) { this.scans.splice(i, 1); continue; }
-      const p = clamp((now - s.start) / Math.max(0.01, s.sweep), 0, 1);
-      const x = s.rect.x + s.rect.w * p;
-      const y = s.rect.y + s.rect.h * (1 - p);
-      const fade = alpha * A.THINKING.strokeAlpha * A.THINKING.fadeFactor(now, s.end - 0.2);
-      const y0 = s.rect.y, y1 = s.rect.y + s.rect.h;
-
-      c.save();
-      c.globalAlpha = fade;
-      // wide, low-opacity glow column under the hairline gives the sweep body
-      const halfCol = 17;
-      const column = c.createLinearGradient(x - halfCol, 0, x + halfCol, 0);
-      column.addColorStop(0, 'rgba(255,120,66,0)');
-      column.addColorStop(0.5, 'rgba(255,150,96,0.19)');
-      column.addColorStop(1, 'rgba(255,120,66,0)');
-      c.fillStyle = column;
-      c.fillRect(x - halfCol, y0, halfCol * 2, y1 - y0);
-      const beam = c.createLinearGradient(0, y0, 0, y1);
-      beam.addColorStop(0, 'rgba(255,120,66,0)');
-      beam.addColorStop(0.18, 'rgba(255,138,82,0.5)');
-      beam.addColorStop(0.5, 'rgba(255,170,120,0.95)');
-      beam.addColorStop(0.82, 'rgba(255,138,82,0.5)');
-      beam.addColorStop(1, 'rgba(255,120,66,0)');
-      c.strokeStyle = beam;
-      c.lineWidth = A.THINKING.lineWidth;
-      c.shadowColor = 'rgba(255,120,66,0.8)';
-      c.shadowBlur = 9;
-      c.beginPath(); c.moveTo(x, y0); c.lineTo(x, y1); c.stroke();
-
-      const half = 14, arm = 6;
-      c.shadowBlur = 7;
-      c.lineWidth = 1.4;
-      c.strokeStyle = 'rgba(255,198,162,0.95)';
-      c.beginPath();
-      c.moveTo(x - half, y - half + arm); c.lineTo(x - half, y - half); c.lineTo(x - half + arm, y - half);
-      c.moveTo(x + half - arm, y - half); c.lineTo(x + half, y - half); c.lineTo(x + half, y - half + arm);
-      c.moveTo(x + half, y + half - arm); c.lineTo(x + half, y + half); c.lineTo(x + half - arm, y + half);
-      c.moveTo(x - half + arm, y + half); c.lineTo(x - half, y + half); c.lineTo(x - half, y + half - arm);
-      c.stroke();
-      c.fillStyle = 'rgba(255,214,184,0.95)';
-      c.beginPath(); c.arc(x, y, 1.8, 0, Math.PI * 2); c.fill();
-      c.restore();
-    }
-
-    /* 3 — breathing dot grid over the viewer, softly faded at the edges. */
+    /* 2 — breathing dot grid over the viewer, softly faded at the edges. */
     this.fieldAlpha = Math.min(1, this.fieldAlpha + 0.04);
     c.save();
     c.beginPath(); c.rect(r.viewer.x, r.viewer.y, r.viewer.w, r.viewer.h); c.clip();
@@ -439,7 +373,7 @@ class Director {
     this.paintFlash(now);
     const idle = !this.thinking && now - this.lastAct > 4 && this.fadeFrom != null;
     if (idle && now - this.fadeFrom > 1) {
-      this.schedule = null; this.acts = []; this.scans = []; this.fadeFrom = null;
+      this.schedule = null; this.acts = []; this.fadeFrom = null;
       this.running = false;
       c.clearRect(0, 0, innerWidth, innerHeight);
       return;
