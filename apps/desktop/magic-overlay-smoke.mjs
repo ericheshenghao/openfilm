@@ -51,11 +51,13 @@ await page.evaluate(() => {
 const checks = [];
 const check = (name, ok, detail) => { checks.push({ name, ok, detail }); console.log((ok ? 'PASS ' : 'FAIL ') + name + (detail ? ' — ' + detail : '')); };
 
-// 1) MagicThinking — the full-window dimming + scan brackets + stage badge.
+// 1) MagicThinking — breathing dot grid only. The dimming mask, scan beams and
+//    stage badge were removed at the user's request: no full-window dimming.
 await fire({ type: 'agent-thinking' });
 await page.waitForTimeout(600);
 const thinkingPixels = await painted();
-check('thinking layer painted', thinkingPixels > 1000, thinkingPixels + ' px');
+check('thinking dot grid painted without a full-window mask', thinkingPixels > 50 && thinkingPixels < 20000,
+  thinkingPixels + ' px');
 await fire({ type: 'agent-thinking', done: true });
 await page.waitForTimeout(1500);
 

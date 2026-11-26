@@ -113,7 +113,6 @@ class Director {
   private swarmT0 = 0;
   private thinking = false;
   private thinkingT0 = 0;
-  private thinkingStage = 0;
   private fieldAlpha = 0;
   private rng = new A.SeededRandom(7);
   private lastAct = 0;
@@ -144,7 +143,7 @@ class Director {
     const now = this.now;
     if (e.type === 'agent-thinking') {
       if (!e.done && !this.thinking) {
-        this.thinking = true; this.thinkingT0 = now; this.thinkingStage = 0;
+        this.thinking = true; this.thinkingT0 = now;
         this.fadeFrom = null;
       } else if (e.done) {
         this.finishThinking();
@@ -155,9 +154,9 @@ class Director {
       // performance alive but do not dispatch editing cursors over the Studio.
       if (!isEditingAct(e.act)) {
         if (!this.thinking) {
-          this.thinking = true; this.thinkingT0 = now; this.thinkingStage = 0;
+          this.thinking = true; this.thinkingT0 = now;
           this.fadeFrom = null;
-        } else if (this.thinkingStage < 2) this.thinkingStage = 1;
+        }
         if (!this.running) { this.running = true; requestAnimationFrame(this.frame); }
         return;
       }
@@ -166,7 +165,6 @@ class Director {
       if (this.acts.length > 40) this.acts.shift();
       this.lastAct = now;
       this.rebuild(now);
-      if (this.thinking && this.thinkingStage < 2) this.thinkingStage = 2;
     } else if (e.type === 'agent-act-done') {
       if (e.callId) {
         const a = this.acts.find((x) => x.id === e.callId);
@@ -231,21 +229,7 @@ class Director {
     if (alpha <= 0) return;
     const r = regions();
 
-    /* 1 — soft vignette instead of a flat black sheet. The centre stays
-       readable, edges dim, and a faint warm bloom sits over the editor. */
-    c.save();
-    const glow = c.createRadialGradient(
-      innerWidth * 0.55, innerHeight * 0.44, innerHeight * 0.06,
-      innerWidth * 0.55, innerHeight * 0.44, Math.max(innerWidth, innerHeight) * 0.78,
-    );
-    glow.addColorStop(0, `rgba(20,13,10,${alpha * A.THINKING.dimming * 0.55})`);
-    glow.addColorStop(0.55, `rgba(5,4,4,${alpha * A.THINKING.dimming * 0.9})`);
-    glow.addColorStop(1, `rgba(0,0,0,${alpha * Math.min(0.82, A.THINKING.dimming * 1.65)})`);
-    c.fillStyle = glow;
-    c.fillRect(0, 0, innerWidth, innerHeight);
-    c.restore();
-
-    /* 2 — breathing dot grid over the viewer, softly faded at the edges. */
+    /* Only the breathing dot grid remains: no dimming mask, no stage badge. */
     this.fieldAlpha = Math.min(1, this.fieldAlpha + 0.04);
     c.save();
     c.beginPath(); c.rect(r.viewer.x, r.viewer.y, r.viewer.w, r.viewer.h); c.clip();
@@ -257,47 +241,6 @@ class Director {
         c.globalAlpha = alpha * 0.2 * edge * pulse * this.fieldAlpha;
         c.fillStyle = '#ffb48a';
         c.beginPath(); c.arc(gx, gy, 1.1, 0, Math.PI * 2); c.fill();
-      }
-    }
-    c.restore();
-
-    const word = A.THINKING.word(['looking', 'analyzing', 'thinking'][this.thinkingStage]);
-    this.paintStage(word, alpha, now);
-    if (t > 2.5 && this.thinkingStage < 2) this.thinkingStage++;
-  }
-
-  /** Glass capsule: pulsing dot, stage name and a three-segment progress. */
-  private paintStage(word: string, alpha = 1, now = this.now) {
-    if (!word) return;
-    const c = this.ctx;
-    const stages = ['Looking', 'Analyzing', 'Thinking'];
-    const active = stages.indexOf(word);
-    c.save();
-    c.font = '600 11.5px Inter, system-ui, sans-serif';
-    c.textBaseline = 'middle';
-    const w = Math.max(122, c.measureText(word).width + 74);
-    const h = 30, x = 16, y = 16;
-    c.globalAlpha = alpha;
-    c.shadowColor = 'rgba(0,0,0,0.5)'; c.shadowBlur = 12; c.shadowOffsetY = 2;
-    c.fillStyle = 'rgba(22,19,18,0.88)';
-    c.beginPath(); c.roundRect(x, y, w, h, 9); c.fill();
-    c.shadowBlur = 0; c.shadowOffsetY = 0;
-    c.strokeStyle = 'rgba(255,140,84,0.4)'; c.lineWidth = 1;
-    c.beginPath(); c.roundRect(x + 0.5, y + 0.5, w - 1, h - 1, 9); c.stroke();
-    // pulsing core with an expanding halo
-    const pulse = 0.5 + 0.5 * Math.sin(now * 5);
-    c.fillStyle = `rgba(255,120,66,${0.6 + 0.4 * pulse})`;
-    c.beginPath(); c.arc(x + 15, y + h / 2, 3.6, 0, Math.PI * 2); c.fill();
-    c.strokeStyle = `rgba(255,150,96,${0.3 * (1 - pulse)})`;
-    c.beginPath(); c.arc(x + 15, y + h / 2, 6 + 4 * pulse, 0, Math.PI * 2); c.stroke();
-    c.fillStyle = '#ffe6d8';
-    c.fillText(word, x + 27, y + h / 2 + 0.5);
-    if (active >= 0) {
-      for (let i = 0; i < 3; i++) {
-        const tx = x + w - 36 + i * 9;
-        c.globalAlpha = alpha * (i <= active ? 0.95 : 0.28);
-        c.fillStyle = i <= active ? '#ff9a63' : 'rgba(255,255,255,0.65)';
-        c.beginPath(); c.roundRect(tx, y + h / 2 - 2, 5, 4, 2); c.fill();
       }
     }
     c.restore();
@@ -352,6 +295,24 @@ class Director {
       c.restore();
     });
     this.paintStage('Editing', 0.9);
+  }
+
+  /** Small editing badge — only during the actual MagicShow swarm. */
+  private paintStage(word: string, alpha = 1) {
+    if (!word) return;
+    const c = this.ctx;
+    c.save();
+    c.font = '600 11.5px Inter, system-ui, sans-serif';
+    c.textBaseline = 'middle';
+    const w = c.measureText(word).width + 24;
+    c.globalAlpha = alpha;
+    c.fillStyle = 'rgba(22,19,18,0.88)';
+    c.beginPath(); c.roundRect(16, 16, w, 28, 9); c.fill();
+    c.strokeStyle = 'rgba(255,140,84,0.4)'; c.lineWidth = 1;
+    c.beginPath(); c.roundRect(16.5, 16.5, w - 1, 27, 9); c.stroke();
+    c.fillStyle = '#ffe6d8';
+    c.fillText(word, 28, 30.5);
+    c.restore();
   }
 
   private paintFlash(now: number) {
