@@ -29,36 +29,48 @@ function rectOf(el: Element | null | undefined): Rect | null {
   return { x: r.left, y: r.top, w: r.width, h: r.height, cx: r.left + r.width / 2, cy: r.top + r.height / 2 };
 }
 
-/** Screen regions used by the cursors. Works even when Studio's DOM changes. */
+/**
+ * Screen regions used by the cursors.
+ *
+ * OpenFilm's window is split: the chat column (`#of-chat`) on the left, Studio's
+ * editor on its right. `#root`, by contrast, is a zero-height React mount, so
+ * measuring from it (as an earlier port did) made "library" land at x≈130 —
+ * inside the chat — and every import/command cursor danced in the chat instead
+ * of over the timeline. Anchor everything to the chat column's right edge.
+ */
 function regions(): Record<string, Rect> {
-  const full = rectOf(document.getElementById('root')) || {
-    x: 0, y: 0, w: innerWidth, h: innerHeight, cx: innerWidth / 2, cy: innerHeight / 2,
-  };
   const chat = rectOf(document.getElementById('of-chat'));
+  // Studio occupies everything to the right of the chat column. Fall back to
+  // the whole window only when the chat has not been laid out yet.
+  const studio: Rect = chat
+    ? { x: chat.x + chat.w, y: 0, w: Math.max(320, innerWidth - chat.x - chat.w), h: innerHeight,
+        cx: chat.x + chat.w + Math.max(320, innerWidth - chat.x - chat.w) / 2, cy: innerHeight / 2 }
+    : { x: 0, y: 0, w: innerWidth, h: innerHeight, cx: innerWidth / 2, cy: innerHeight / 2 };
   const viewer: Rect = {
-    x: full.x + full.w * 0.22, y: full.y + 52, w: full.w * 0.56, h: full.h * 0.60,
-    cx: full.x + full.w * 0.50, cy: full.y + 52 + full.h * 0.30,
+    x: studio.x + studio.w * 0.06, y: studio.y + 52, w: studio.w * 0.62, h: studio.h * 0.60,
+    cx: studio.x + studio.w * 0.37, cy: studio.y + 52 + studio.h * 0.30,
   };
   const timeline: Rect = {
-    x: full.x + full.w * 0.18, y: full.y + full.h * 0.66, w: full.w * 0.80, h: full.h * 0.30,
-    cx: full.x + full.w * 0.58, cy: full.y + full.h * 0.81,
+    x: studio.x + studio.w * 0.08, y: studio.y + studio.h * 0.66, w: studio.w * 0.84, h: studio.h * 0.30,
+    cx: studio.x + studio.w * 0.50, cy: studio.y + studio.h * 0.81,
   };
+  // The media library is Studio's left strip, right of the chat — never the chat itself.
   const library: Rect = {
-    x: full.x, y: full.y + 52, w: Math.min(260, full.w * 0.18), h: full.h * 0.60,
-    cx: full.x + Math.min(130, full.w * 0.09), cy: full.y + 52 + full.h * 0.30,
+    x: studio.x, y: studio.y + 52, w: Math.min(220, studio.w * 0.20), h: studio.h * 0.60,
+    cx: studio.x + Math.min(110, studio.w * 0.10), cy: studio.y + 52 + studio.h * 0.30,
   };
-  return { full, viewer, timeline, library, chat: chat || viewer };
+  return { full: studio, studio, viewer, timeline, library, chat: chat || viewer };
 }
 
 /** Closed-set agent act → the part of the app it touches. */
 function actRegion(act: string): Rect {
   const r = regions();
-  if (/^(film\.arrange|scene\.write|scene\.edit|film\.frames|film\.check|film\.review)/.test(act)) return r.timeline;
-  if (/^audio\./.test(act)) return r.timeline;
+  if (/^(film\.|scene\.|audio\.)/.test(act)) return r.timeline;
+  /* Importing / splitting / local file and command edits change the film on the
+     timeline; send them there rather than to the media strip (or the chat). */
+  if (/^(files\.|command\.|working$)/.test(act)) return r.timeline;
   if (/^asset\./.test(act)) return r.library;
-  if (/^research\./.test(act)) return r.chat;
-  if (/^files\.|^command\./.test(act)) return r.library;
-  if (/^chat\./.test(act)) return r.chat;
+  if (/^research\.|^chat\./.test(act)) return r.chat;
   return r.viewer;
 }
 
@@ -164,8 +176,10 @@ class Director {
       delay: 0,
     }));
     const spawn = (() => {
-      const r = rectOf(document.getElementById('of-chat'));
-      return r ? { x: r.x + 40, y: r.y + 48 } : { x: 80, y: 60 };
+      // Cursors fly out of the chat composer, where the person typed the request.
+      const composer = document.querySelector('#of-chat [contenteditable]');
+      const r = rectOf(composer) || rectOf(document.getElementById('of-chat'));
+      return r ? { x: r.x + r.w / 2, y: r.y + r.h / 2 } : { x: 80, y: 60 };
     })();
     // The Editroom Swarm keeps spawn on the director (show-web.js:191,243);
     // schedule() itself does not return it. agentPose() needs it on every frame.

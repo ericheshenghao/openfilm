@@ -18,8 +18,12 @@ const browser = await chromium.launch({
 const page = await browser.newPage({ viewport: { width: 1200, height: 800 } });
 const errors = [];
 page.on('pageerror', (e) => errors.push(String(e.message)));
-await page.setContent(`<style>html,body{margin:0;height:100%;background:#111}#root{position:absolute;left:0;top:0;width:900px;height:800px}#of-chat{position:absolute;left:900px;top:0;width:300px;height:800px}</style>
-  <div id="root"></div><div id="of-chat"></div>`);
+// Mirror the real shell: #root is a zero-height React mount; the chat column
+// occupies the LEFT ~420px and Studio is to its right. The old port measured
+// from #root and put `library` inside the chat, so import/command cursors
+// danced in the chat instead of over the timeline.
+await page.setContent(`<style>html,body{margin:0;height:100%;background:#111}#root{position:absolute;left:420px;top:0;width:780px;height:0}#of-chat{position:absolute;left:0;top:0;width:420px;height:800px}#of-chat .composer{position:absolute;left:60px;top:748px;width:300px;height:22px}</style>
+  <div id="root"></div><div id="of-chat"><div class="composer" contenteditable="true"></div></div>`);
 await page.addScriptTag({ path: path.join(magicDir, 'animation.cjs') });
 await page.addScriptTag({ content: js });
 
@@ -31,6 +35,17 @@ const painted = () => page.evaluate(() => {
   let n = 0;
   for (let i = 3; i < d.length; i += 4) if (d[i] > 8) n++;
   return n;
+});
+const CHAT_RIGHT = 420;
+await page.evaluate(() => {
+  const A = window.OpenFilmMagicAnimation;
+  window.__poses = [];
+  const orig = A.agentPose;
+  A.agentPose = function (...args) {
+    const r = orig.apply(this, args);
+    if (r && !r.hidden && r.pos) window.__poses.push({ x: r.pos.x, y: r.pos.y });
+    return r;
+  };
 });
 
 const checks = [];
@@ -56,7 +71,25 @@ for (let i = 0; i < 10; i++) {
   if (n > peak) peak = n;
 }
 check('swarm cursors painted', peak > 100 && peak < 200000, peak + ' px');
+
+// 3) Import/split (command.run) must land over Studio's timeline, not the chat.
+await fire({ type: 'agent-thinking', done: true });
+await page.waitForTimeout(1400);
+await page.evaluate(() => {
+  window.__poses = [];
+  for (let i = 0; i < 10; i++) {
+    window.dispatchEvent(new CustomEvent('openfilm:magic', { detail: { type: 'agent-act', callId: 'imp' + i, act: 'command.run', query: 'split' } }));
+  }
+});
+await page.waitForTimeout(1200);
+const landing = await page.evaluate((chatRight) => {
+  const ps = window.__poses;
+  return { n: ps.length, inChat: ps.filter((q) => q.x < chatRight).length, inStudio: ps.filter((q) => q.x >= chatRight).length };
+}, CHAT_RIGHT);
+check('import cursors fly to Studio, not chat', landing.n > 0 && landing.inStudio > landing.inChat,
+  `${landing.inStudio}/${landing.n} in studio, ${landing.inChat} in chat`);
 check('no page errors', errors.length === 0, errors.join(' | ') || 'none');
+
 
 await browser.close();
 process.exit(checks.every((c) => c.ok) ? 0 : 1);
