@@ -80,6 +80,7 @@ class Director {
   private ctx: CanvasRenderingContext2D;
   private acts: Act[] = [];
   private schedule: any = null;
+  private spawn: { x: number; y: number } = { x: 80, y: 60 };
   private swarmT0 = 0;
   private thinking = false;
   private thinkingT0 = 0;
@@ -166,6 +167,9 @@ class Director {
       const r = rectOf(document.getElementById('of-chat'));
       return r ? { x: r.x + 40, y: r.y + 48 } : { x: 80, y: 60 };
     })();
+    // The Editroom Swarm keeps spawn on the director (show-web.js:191,243);
+    // schedule() itself does not return it. agentPose() needs it on every frame.
+    this.spawn = spawn;
     this.schedule = A.schedule(tasks, {
       spawn,
       seed: this.acts.length + 1,
@@ -269,7 +273,7 @@ class Director {
     c.restore();
 
     for (const agent of S.agents) {
-      const pose = A.agentPose(agent, S.slots, t, S.spawn, { agentMode: false });
+      const pose = A.agentPose(agent, S.slots, t, this.spawn, { agentMode: false });
       if (pose.hidden) continue;
       const p = pose.pos, k = pose.scale;
       c.save();
@@ -287,7 +291,7 @@ class Director {
     shown.forEach((a, i) => {
       const slot = S.slots[S.order[i]];
       if (!slot || t < slot.start) return;
-      const pose = A.agentPose(S.agents[i % S.agents.length], S.slots, t, S.spawn, { agentMode: false });
+      const pose = A.agentPose(S.agents[i % S.agents.length], S.slots, t, this.spawn, { agentMode: false });
       if (pose.hidden) return;
       const text = labelOf(a.act) + (a.query ? ' · ' + String(a.query).slice(0, 22) : '');
       c.save();
