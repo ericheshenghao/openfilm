@@ -72,13 +72,28 @@ for (let i = 0; i < 10; i++) {
 }
 check('swarm cursors painted', peak > 100 && peak < 200000, peak + ' px');
 
-// 3) Import/split (command.run) must land over Studio's timeline, not the chat.
+// 3) Reading / shell / research acts are THINKING, not edits. The screenshots
+//    showed cursors "making" over the timeline while the agent only read files.
+//    They must NOT dispatch any editing cursor, only keep the thinking layer.
 await fire({ type: 'agent-thinking', done: true });
 await page.waitForTimeout(1400);
 await page.evaluate(() => {
   window.__poses = [];
-  for (let i = 0; i < 10; i++) {
-    window.dispatchEvent(new CustomEvent('openfilm:magic', { detail: { type: 'agent-act', callId: 'imp' + i, act: 'command.run', query: 'split' } }));
+  for (const act of ['command.run', 'files.read', 'research.read', 'film.check', 'working']) {
+    window.dispatchEvent(new CustomEvent('openfilm:magic', { detail: { type: 'agent-act', callId: 'think-' + act, act, query: 'read' } }));
+  }
+});
+await page.waitForTimeout(1200);
+const thinkingPoses = await page.evaluate(() => window.__poses.length);
+check('thinking acts spawn no editing cursors', thinkingPoses === 0, thinkingPoses + ' cursor poses');
+
+// 4) Real edits (film.arrange / scene.*) DO send cursors — and to the timeline.
+await fire({ type: 'agent-thinking', done: true });
+await page.waitForTimeout(1400);
+await page.evaluate(() => {
+  window.__poses = [];
+  for (let i = 0; i < 6; i++) {
+    window.dispatchEvent(new CustomEvent('openfilm:magic', { detail: { type: 'agent-act', callId: 'edit' + i, act: 'film.arrange', query: 'cut' } }));
   }
 });
 await page.waitForTimeout(1200);
@@ -86,7 +101,7 @@ const landing = await page.evaluate((chatRight) => {
   const ps = window.__poses;
   return { n: ps.length, inChat: ps.filter((q) => q.x < chatRight).length, inStudio: ps.filter((q) => q.x >= chatRight).length };
 }, CHAT_RIGHT);
-check('import cursors fly to Studio, not chat', landing.n > 0 && landing.inStudio > landing.inChat,
+check('edit cursors fly to Studio timeline, not chat', landing.n > 0 && landing.inStudio > landing.inChat,
   `${landing.inStudio}/${landing.n} in studio, ${landing.inChat} in chat`);
 check('no page errors', errors.length === 0, errors.join(' | ') || 'none');
 

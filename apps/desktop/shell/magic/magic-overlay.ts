@@ -62,16 +62,33 @@ function regions(): Record<string, Rect> {
   return { full: studio, studio, viewer, timeline, library, chat: chat || viewer };
 }
 
-/** Closed-set agent act → the part of the app it touches. */
+/**
+ * Closed-set agent act → the part of the app it touches.
+ *
+ * Only acts that actually CHANGE the picture send an editing cursor to the
+ * timeline. Reading / researching / shell work is the agent *thinking*, not
+ * editing: a cursor performing a drag there would be a lie (the screenshots
+ * showed cursors "making" over the timeline while the agent only read files).
+ * Those thinking acts stay in the chat, where the work is really happening.
+ */
 function actRegion(act: string): Rect {
   const r = regions();
-  if (/^(film\.|scene\.|audio\.)/.test(act)) return r.timeline;
-  /* Importing / splitting / local file and command edits change the film on the
-     timeline; send them there rather than to the media strip (or the chat). */
-  if (/^(files\.|command\.|working$)/.test(act)) return r.timeline;
+  if (/^(film\.arrange|scene\.|audio\.)/.test(act)) return r.timeline;
+  /* Looking at the film (review/frames/check/hear) happens over the viewer. */
+  if (/^film\./.test(act)) return r.viewer;
   if (/^asset\./.test(act)) return r.library;
-  if (/^research\.|^chat\./.test(act)) return r.chat;
+  /* research / chat / local file + shell work / unknown = thinking, stay in chat. */
+  if (/^(research\.|chat\.|files\.|command\.|working$)/.test(act)) return r.chat;
   return r.viewer;
+}
+
+/**
+ * Does this act actually perform an edit on the film? Only those get a cursor
+ * swarm. Reading, researching, shell work and "looking" acts are the agent
+ * thinking — showing a cursor dragging across the timeline for them is wrong.
+ */
+function isEditingAct(act: string): boolean {
+  return /^(film\.arrange|scene\.|audio\.|asset\.)/.test(act);
 }
 
 function labelOf(act: string): string {
@@ -135,6 +152,16 @@ class Director {
       }
     } else if (e.type === 'agent-act') {
       if (this.acts.some((a) => a.id === e.callId)) return; // SSE replay is idempotent
+      // Thinking / research / file reads are not film edits: keep the thinking
+      // performance alive but do not dispatch editing cursors over the Studio.
+      if (!isEditingAct(e.act)) {
+        if (!this.thinking) {
+          this.thinking = true; this.thinkingT0 = now; this.thinkingStage = 0;
+          this.fadeFrom = null; this.scans = [];
+        } else if (this.thinkingStage < 2) this.thinkingStage = 1;
+        if (!this.running) { this.running = true; requestAnimationFrame(this.frame); }
+        return;
+      }
       this.thinking = this.thinking && now - this.lastAct < 4;
       this.acts.push({ id: e.callId, act: e.act, query: e.query, born: now, done: false, kind: e.act });
       if (this.acts.length > 40) this.acts.shift();
