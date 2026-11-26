@@ -73,12 +73,15 @@ const updates = typeof product.desktop?.updates === 'string' ? product.desktop.u
 export const FEED = updates ? `${updates}/${win ? 'win' : 'mac'}/${arch}` : null;
 const NOTARY_PROFILE = process.env.OPENFILM_NOTARY_PROFILE || 'openfilm-notary';
 
-const run = (cmd, args, opts = {}) => execFileSync(cmd, args, { stdio: 'inherit', ...opts });
+const run = (cmd, args, opts = {}) => execFileSync(cmd, args, { stdio: 'inherit', shell: process.platform === 'win32', ...opts });
+/** Windows CreateProcess does not resolve npm.cmd from PATHEXT when shell:false. */
+const NPM = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const PNPM = process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm';
 const pkg = JSON.parse(readFileSync(join(desktop, 'package.json'), 'utf8'));
 
 /* 1. the window's page, and Studio's editor for the package */
 const vite = join(dirname(require.resolve('vite/package.json')), 'bin', 'vite.js');
-run(process.execPath, [vite, 'build', '--config', 'shell/vite.config.ts', '--logLevel', 'warn'], { cwd: desktop });
+run(process.execPath, [vite, 'build', '--config', 'shell/vite.config.ts', '--emptyOutDir=false', '--logLevel', 'warn'], { cwd: desktop });
 /* the old assets stay: a Studio already running from this checkout keeps loading the pages it has open */
 run(process.execPath, [vite, 'build', '--config', 'studio/ui/vite.config.ts', '--emptyOutDir=false', '--logLevel', 'warn'], { cwd: protocol });
 
@@ -87,10 +90,10 @@ rmSync(work, { recursive: true, force: true });
 mkdirSync(stage, { recursive: true });
 cpSync(join(desktop, 'src'), join(stage, 'src'), { recursive: true, filter: (from) => !from.endsWith('.test.mjs') });
 cpSync(join(desktop, 'shell/dist'), join(stage, 'shell/dist'), { recursive: true });
-const pack = (dir) => execFileSync('npm', ['pack', '--ignore-scripts', '--pack-destination', work, '--silent'], { cwd: dir, encoding: 'utf8' }).trim().split('\n').pop();
+const pack = (dir) => execFileSync(NPM, ['pack', '--ignore-scripts', '--pack-destination', work, '--silent'], { cwd: dir, encoding: 'utf8', shell: process.platform === 'win32' }).trim().split('\n').pop();
 const dependencies = { ...pkg.dependencies, openfilm: `file:../${pack(protocol)}` };
 /* npm takes the versions pnpm's lockfile has (locked-versions.mjs): what the tests ran with, not the latest */
-const lockedTree = JSON.parse(execFileSync('pnpm', ['list', '--prod', '--depth', 'Infinity', '--json'], { cwd: desktop, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 }))[0];
+const lockedTree = JSON.parse(execFileSync(PNPM, ['list', '--prod', '--depth', 'Infinity', '--json'], { cwd: desktop, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, shell: process.platform === 'win32' }))[0];
 writeFileSync(join(stage, 'package.json'), `${JSON.stringify({
   name: 'openfilm-desktop',
   productName: NAME,
@@ -105,7 +108,7 @@ writeFileSync(join(stage, 'package.json'), `${JSON.stringify({
   dependencies,
   overrides: lockedOverrides(lockedTree, pkg.dependencies),
 }, null, 2)}\n`);
-run('npm', ['install', '--omit=dev', '--omit=optional', '--no-audit', '--no-fund', '--no-package-lock', '--loglevel=error'], { cwd: stage });
+run(NPM, ['install', '--omit=dev', '--omit=optional', '--no-audit', '--no-fund', '--no-package-lock', '--loglevel=error'], { cwd: stage });
 const offLock = versionsOffLock(lockedTree, join(stage, 'node_modules'));
 if (offLock.length) {
   throw new Error(`The installer's packages are not the lockfile's:\n${offLock.map((p) => `  ${p.name} ${p.version} (locked: ${p.locked.join(', ')})`).join('\n')}`);
@@ -117,11 +120,26 @@ cpSync(productFile, join(stage, 'node_modules/openfilm/product.json'));
 const runtime = join(work, 'runtime');
 const { ffmpegDownloadable, fetchFfmpeg } = await import(pathToFileURL(join(desktop, 'src/ffmpeg-runtime.mjs')).href);
 const platform = win ? 'win32' : 'darwin';
-if (ffmpegDownloadable(platform, arch)) await fetchFfmpeg(join(runtime, 'ffmpeg'), { platform, arch, license: true });
-else console.warn(`No ffmpeg build for ${platform}-${arch}: this app downloads none either; people install their own.`);
-run(process.execPath, [join(stage, 'node_modules/playwright-core/cli.js'), 'install', 'chromium-headless-shell'], {
-  env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: join(runtime, 'ms-playwright'), PLAYWRIGHT_HOST_PLATFORM_OVERRIDE: win ? 'win64' : arch === 'arm64' ? 'mac15-arm64' : 'mac15' },
-});
+if (process.env.OPENFILM_LOCAL_RUNTIME === '1' && win) {
+  /* Fork build on a machine with slow downloads: reuse the local ffmpeg and the
+     Playwright headless shell already cached by this user. The packaged layout
+     is the same one fetchFfmpeg()/playwright install would have produced. */
+  const localFF = process.env.OPENFILM_LOCAL_FFMPEG_DIR;
+  mkdirSync(join(runtime, 'ffmpeg'), { recursive: true });
+  if (localFF && existsSync(join(localFF, 'ffmpeg.exe'))) {
+    cpSync(join(localFF, 'ffmpeg.exe'), join(runtime, 'ffmpeg', 'ffmpeg.exe'));
+    if (existsSync(join(localFF, 'ffprobe.exe'))) cpSync(join(localFF, 'ffprobe.exe'), join(runtime, 'ffmpeg', 'ffprobe.exe'));
+  }
+  const cached = join(process.env.LOCALAPPDATA || join(process.env.USERPROFILE || '', 'AppData', 'Local'), 'ms-playwright');
+  if (existsSync(cached)) cpSync(cached, join(runtime, 'ms-playwright'), { recursive: true });
+  else console.warn(`No cached Playwright browsers at ${cached}: the app will download one on first use.`);
+} else {
+  if (ffmpegDownloadable(platform, arch)) await fetchFfmpeg(join(runtime, 'ffmpeg'), { platform, arch, license: true });
+  else console.warn(`No ffmpeg build for ${platform}-${arch}: this app downloads none either; people install their own.`);
+  run(process.execPath, [join(stage, 'node_modules/playwright-core/cli.js'), 'install', 'chromium-headless-shell'], {
+    env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: join(runtime, 'ms-playwright'), PLAYWRIGHT_HOST_PLATFORM_OVERRIDE: win ? 'win64' : arch === 'arm64' ? 'mac15-arm64' : 'mac15' },
+  });
+}
 
 /* 3. the app */
 const builder = require('electron-builder');
@@ -134,7 +152,7 @@ await builder.build({
   ...(win ? { win: ['nsis'] } : { mac: ['dmg', 'zip'] }),
   [arch]: true,
   config: {
-    afterPack: win ? (context) => windowsResources(context) : undefined,
+    afterPack: win && process.env.OPENFILM_SKIP_WIN_RESOURCES !== '1' ? (context) => windowsResources(context) : undefined,
     /* unsigned on a Mac: signed ad hoc, whole, before the .dmg and .zip are made. Electron's fuses are written into
        its framework after the linker signed it, and an Apple chip kills a program whose pages no longer match its
        signature ("Code Signature Invalid") the moment it starts */
@@ -166,6 +184,7 @@ await builder.build({
     productName: NAME,
     copyright: 'Copyright © 2026 OpenFilm',
     electronVersion,
+    ...(process.env.OPENFILM_ELECTRON_DIST ? { electronDist: process.env.OPENFILM_ELECTRON_DIST } : {}),
     asar: true,
     /* run by Electron as Node from outside the archive: the CLI the agents run, the agents' adapters */
     asarUnpack: ['node_modules/openfilm/**', 'node_modules/@agentclientprotocol/**', 'node_modules/playwright-core/**'],
@@ -173,14 +192,14 @@ await builder.build({
     /* ffmpeg and the headless browser (2b), as files of their own beside the archive: they run as programs */
     extraResources: [{ from: runtime, to: 'runtime' }],
     directories: { output: out, buildResources: join(desktop, 'build') },
-    electronFuses: {
+    ...(process.env.OPENFILM_SKIP_FUSES !== '1' ? { electronFuses: {
       runAsNode: true,
       enableCookieEncryption: true,
       enableNodeOptionsEnvironmentVariable: false,
       enableNodeCliInspectArguments: false,
       enableEmbeddedAsarIntegrityValidation: true,
       onlyLoadAppFromAsar: true,
-    },
+    } } : {}),
     /* one feed folder for both channels: the app reads latest(-mac).yml, or beta(-mac).yml when Beta Updates is on
        (src/update-channel.mjs); publishing puts this build's feed under either name */
     publish: FEED ? [{ provider: 'generic', url: FEED, channel: 'latest' }] : null,
