@@ -10,6 +10,7 @@ import { FocusNav } from 'openfilm/studio-ui/components/FocusNav.tsx';
 import { applyStudioHost } from 'openfilm/studio-ui/lib/host.ts';
 import { mountChat } from '../chat/src/mount';
 import { CanvasModelPicker, canvasWritingModel } from '../chat/src/components/ModelPopover';
+import './magic/magic-overlay';
 import './shell.css';
 import '../chat/src/chat.css';
 

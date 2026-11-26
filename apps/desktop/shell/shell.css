@@ -3,6 +3,10 @@
 @source '../node_modules/openfilm/studio/ui/src';
 @source '../chat/src';
 
+/* MagicShow / MagicThinking performance layer (Editroom Swift-derived numbers).
+   A window-wide canvas; it never takes the pointer. */
+#of-magic-canvas{position:fixed;left:0;top:0;width:100vw;height:100vh;pointer-events:none;z-index:70;background:transparent}
+
 /* the chat's column: left of Studio, under its top bar (bridge.ts places and sizes it); over Studio's panes and its
    assets drawer, under its menus and dialogs */
 /* the line between the window's top bar and the panes runs over the chat too, as it does over Studio's panes */
