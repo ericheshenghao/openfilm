@@ -79,19 +79,11 @@ export interface TranscriptPlanEntry {
  * Pure, returning a new array: on an SSE reconnect the server replays from the start, so this must be
  * idempotent; the same partId / callId again updates in place rather than adding a row.
  */
-/** Magic performance layer: a side-channel from the live event stream to the shell's overlay canvas.
- *  The chat's own state stays pure; this only tells the cursors what the agent just did. */
-function broadcastMagic(event: PublicGenerationEvent): void {
-  if (typeof window === 'undefined') return;
-  window.dispatchEvent(new CustomEvent('openfilm:magic', { detail: event }));
-}
-
 export function reduceTranscript(
   items: TranscriptItem[],
   event: PublicGenerationEvent,
   now: number = Date.now(),
 ): TranscriptItem[] {
-  broadcastMagic(event);
   switch (event.type) {
     case 'agent-text': {
       const id = `text:${event.partId ?? event.turnNo}`;
