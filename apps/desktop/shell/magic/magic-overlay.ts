@@ -229,6 +229,11 @@ class Director {
     if (!r) return;
     const sweep = (1 + this.rng.next() * 0.5) * A.THINKING.sweepFactor(r.w);
     this.scans.push({ rect: r, start: now, sweep, end: A.THINKING.scanEnd(now, sweep) });
+    // MagicThinking.swift:57 scanRoom() caps concurrent scans. The earlier port
+    // ignored it, so at 0.18s scanGap up to 12 full-height lines stacked into a
+    // "fence" — the main reason the effect looked cheap. Keep at most 3.
+    const room = A.THINKING.scanRoom(4);
+    while (this.scans.length > room) this.scans.shift();
     this.lastScan = now;
   }
   private lastScan = -1;
@@ -238,62 +243,129 @@ class Director {
     const t = now - this.thinkingT0;
     const alpha = A.THINKING.appear(t);
     if (alpha <= 0) return;
+    const r = regions();
+
+    /* 1 — soft vignette instead of a flat black sheet. The centre stays
+       readable, edges dim, and a faint warm bloom sits over the editor. */
     c.save();
-    c.globalAlpha = alpha * A.THINKING.dimming;
-    c.fillStyle = '#000';
+    const glow = c.createRadialGradient(
+      innerWidth * 0.55, innerHeight * 0.44, innerHeight * 0.06,
+      innerWidth * 0.55, innerHeight * 0.44, Math.max(innerWidth, innerHeight) * 0.78,
+    );
+    glow.addColorStop(0, `rgba(20,13,10,${alpha * A.THINKING.dimming * 0.55})`);
+    glow.addColorStop(0.55, `rgba(5,4,4,${alpha * A.THINKING.dimming * 0.9})`);
+    glow.addColorStop(1, `rgba(0,0,0,${alpha * Math.min(0.82, A.THINKING.dimming * 1.65)})`);
+    c.fillStyle = glow;
     c.fillRect(0, 0, innerWidth, innerHeight);
     c.restore();
 
-    const r = regions();
+    /* 2 — scan sweeps: a tapered light beam with a bright head and a fading
+       tail, plus a camera-viewfinder reticle built from four corner brackets
+       instead of a dashed 28px square. */
     if (now - this.lastScan > A.THINKING.scanGap && t > A.THINKING.scanStart) {
       this.addScan([r.viewer, r.timeline, r.library, r.chat][this.scans.length % 4], now);
     }
-    // dashed scanning brackets around the region being read
     for (let i = this.scans.length - 1; i >= 0; i--) {
       const s = this.scans[i];
       if (now > s.end) { this.scans.splice(i, 1); continue; }
       const p = clamp((now - s.start) / Math.max(0.01, s.sweep), 0, 1);
       const x = s.rect.x + s.rect.w * p;
       const y = s.rect.y + s.rect.h * (1 - p);
+      const fade = alpha * A.THINKING.strokeAlpha * A.THINKING.fadeFactor(now, s.end - 0.2);
+      const y0 = s.rect.y, y1 = s.rect.y + s.rect.h;
+
       c.save();
-      c.globalAlpha = alpha * A.THINKING.strokeAlpha * A.THINKING.fadeFactor(now, s.end - 0.2);
-      c.strokeStyle = '#ff7842'; c.lineWidth = A.THINKING.lineWidth;
-      c.setLineDash(A.THINKING.dash); c.lineDashOffset = -now * A.THINKING.dashSpeed;
-      c.strokeRect(x - 14, y - 14, 28, 28);
-      c.setLineDash([]);
-      c.beginPath(); c.moveTo(x, s.rect.y); c.lineTo(x, s.rect.y + s.rect.h); c.stroke();
+      c.globalAlpha = fade;
+      // wide, low-opacity glow column under the hairline gives the sweep body
+      const halfCol = 17;
+      const column = c.createLinearGradient(x - halfCol, 0, x + halfCol, 0);
+      column.addColorStop(0, 'rgba(255,120,66,0)');
+      column.addColorStop(0.5, 'rgba(255,150,96,0.19)');
+      column.addColorStop(1, 'rgba(255,120,66,0)');
+      c.fillStyle = column;
+      c.fillRect(x - halfCol, y0, halfCol * 2, y1 - y0);
+      const beam = c.createLinearGradient(0, y0, 0, y1);
+      beam.addColorStop(0, 'rgba(255,120,66,0)');
+      beam.addColorStop(0.18, 'rgba(255,138,82,0.5)');
+      beam.addColorStop(0.5, 'rgba(255,170,120,0.95)');
+      beam.addColorStop(0.82, 'rgba(255,138,82,0.5)');
+      beam.addColorStop(1, 'rgba(255,120,66,0)');
+      c.strokeStyle = beam;
+      c.lineWidth = A.THINKING.lineWidth;
+      c.shadowColor = 'rgba(255,120,66,0.8)';
+      c.shadowBlur = 9;
+      c.beginPath(); c.moveTo(x, y0); c.lineTo(x, y1); c.stroke();
+
+      const half = 14, arm = 6;
+      c.shadowBlur = 7;
+      c.lineWidth = 1.4;
+      c.strokeStyle = 'rgba(255,198,162,0.95)';
+      c.beginPath();
+      c.moveTo(x - half, y - half + arm); c.lineTo(x - half, y - half); c.lineTo(x - half + arm, y - half);
+      c.moveTo(x + half - arm, y - half); c.lineTo(x + half, y - half); c.lineTo(x + half, y - half + arm);
+      c.moveTo(x + half, y + half - arm); c.lineTo(x + half, y + half); c.lineTo(x + half - arm, y + half);
+      c.moveTo(x - half + arm, y + half); c.lineTo(x - half, y + half); c.lineTo(x - half, y + half - arm);
+      c.stroke();
+      c.fillStyle = 'rgba(255,214,184,0.95)';
+      c.beginPath(); c.arc(x, y, 1.8, 0, Math.PI * 2); c.fill();
       c.restore();
     }
-    // dot field over the viewer, a shimmering preview of what is being planned
+
+    /* 3 — breathing dot grid over the viewer, softly faded at the edges. */
     this.fieldAlpha = Math.min(1, this.fieldAlpha + 0.04);
     c.save();
-    c.globalAlpha = alpha * 0.28 * this.fieldAlpha;
-    c.fillStyle = '#ffb08a';
-    for (let i = 0; i < 90; i++) {
-      const gx = r.viewer.x + ((i * 73) % 100) / 100 * r.viewer.w;
-      const gy = r.viewer.y + ((i * 41) % 100) / 100 * r.viewer.h;
-      const pulse = 0.5 + 0.5 * Math.sin(now * 5 + i);
-      c.globalAlpha = alpha * 0.08 * pulse;
-      c.fillRect(gx, gy, 2, 2);
+    c.beginPath(); c.rect(r.viewer.x, r.viewer.y, r.viewer.w, r.viewer.h); c.clip();
+    const step = 26;
+    for (let gx = r.viewer.x + step; gx < r.viewer.x + r.viewer.w; gx += step) {
+      for (let gy = r.viewer.y + step; gy < r.viewer.y + r.viewer.h; gy += step) {
+        const edge = 1 - clamp(Math.hypot(gx - r.viewer.cx, gy - r.viewer.cy) / (r.viewer.w * 0.62), 0, 1);
+        const pulse = 0.35 + 0.65 * (0.5 + 0.5 * Math.sin(now * 3.1 - (gx + gy) * 0.012));
+        c.globalAlpha = alpha * 0.2 * edge * pulse * this.fieldAlpha;
+        c.fillStyle = '#ffb48a';
+        c.beginPath(); c.arc(gx, gy, 1.1, 0, Math.PI * 2); c.fill();
+      }
     }
     c.restore();
 
     const word = A.THINKING.word(['looking', 'analyzing', 'thinking'][this.thinkingStage]);
-    this.paintStage(word, alpha);
+    this.paintStage(word, alpha, now);
     if (t > 2.5 && this.thinkingStage < 2) this.thinkingStage++;
   }
 
-  private paintStage(word: string, alpha = 1) {
+  /** Glass capsule: pulsing dot, stage name and a three-segment progress. */
+  private paintStage(word: string, alpha = 1, now = this.now) {
     if (!word) return;
     const c = this.ctx;
+    const stages = ['Looking', 'Analyzing', 'Thinking'];
+    const active = stages.indexOf(word);
     c.save();
-    c.font = '600 12px Inter, system-ui, sans-serif';
-    const w = c.measureText(word).width + 24;
-    c.globalAlpha = alpha * 0.92;
-    c.fillStyle = '#ff4a1c';
-    c.beginPath(); c.roundRect(16, 16, w, 28, 8); c.fill();
-    c.fillStyle = '#fff'; c.textBaseline = 'middle';
-    c.fillText(word, 28, 31);
+    c.font = '600 11.5px Inter, system-ui, sans-serif';
+    c.textBaseline = 'middle';
+    const w = Math.max(122, c.measureText(word).width + 74);
+    const h = 30, x = 16, y = 16;
+    c.globalAlpha = alpha;
+    c.shadowColor = 'rgba(0,0,0,0.5)'; c.shadowBlur = 12; c.shadowOffsetY = 2;
+    c.fillStyle = 'rgba(22,19,18,0.88)';
+    c.beginPath(); c.roundRect(x, y, w, h, 9); c.fill();
+    c.shadowBlur = 0; c.shadowOffsetY = 0;
+    c.strokeStyle = 'rgba(255,140,84,0.4)'; c.lineWidth = 1;
+    c.beginPath(); c.roundRect(x + 0.5, y + 0.5, w - 1, h - 1, 9); c.stroke();
+    // pulsing core with an expanding halo
+    const pulse = 0.5 + 0.5 * Math.sin(now * 5);
+    c.fillStyle = `rgba(255,120,66,${0.6 + 0.4 * pulse})`;
+    c.beginPath(); c.arc(x + 15, y + h / 2, 3.6, 0, Math.PI * 2); c.fill();
+    c.strokeStyle = `rgba(255,150,96,${0.3 * (1 - pulse)})`;
+    c.beginPath(); c.arc(x + 15, y + h / 2, 6 + 4 * pulse, 0, Math.PI * 2); c.stroke();
+    c.fillStyle = '#ffe6d8';
+    c.fillText(word, x + 27, y + h / 2 + 0.5);
+    if (active >= 0) {
+      for (let i = 0; i < 3; i++) {
+        const tx = x + w - 36 + i * 9;
+        c.globalAlpha = alpha * (i <= active ? 0.95 : 0.28);
+        c.fillStyle = i <= active ? '#ff9a63' : 'rgba(255,255,255,0.65)';
+        c.beginPath(); c.roundRect(tx, y + h / 2 - 2, 5, 4, 2); c.fill();
+      }
+    }
     c.restore();
   }
 
